@@ -306,7 +306,7 @@
 // Serial port speeds.
 //
 #ifndef SERIAL0_BAUD
- # define SERIAL0_BAUD                   115200
+ # define SERIAL0_BAUD                   460800
 #endif
 #ifndef SERIAL3_BAUD
  # define SERIAL3_BAUD                    57600

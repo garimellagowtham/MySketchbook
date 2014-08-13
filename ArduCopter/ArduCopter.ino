@@ -1018,12 +1018,14 @@ void loop()
         }
         else
         {
-          gcs_update();//runs at 100Hz
+          gcs_update();//runs at 200Hz
+          gcs_data_stream_send();
           Fifty_Hzcounter++;
         }
 
    
-    } else {
+    }
+   /* else {
 #ifdef DESKTOP_BUILD
         usleep(1000);
 #endif
@@ -1039,6 +1041,7 @@ void loop()
             }
         }
     }
+    */
 
 }
 

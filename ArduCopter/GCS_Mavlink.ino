@@ -32,12 +32,14 @@ static bool gcs_check()
         gcs_send_message(MSG_HEARTBEAT);
         sent_message = true;
     }
+   /*
     if (tnow - last_50hz > 20 && !sent_message) {
         last_50hz = tnow;
-        //gcs_update(); shifted this to fastloop()
-        gcs_data_stream_send();
+        //gcs_update(); shifted these to fastloop()
+        //gcs_data_stream_send();
         sent_message = true;
     }
+    */
 
     gcs_send_message(MSG_RETRY_DEFERRED);
 
