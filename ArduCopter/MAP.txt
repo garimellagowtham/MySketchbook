@@ -1,0 +1,9 @@
+1. Complete Rotation mapping and understand transforms so that without streaming we shud still be able to get the roll pitch yaw that is onboard of quadcopter:
+
+2. Stream RADIO_IN values to see the radio raw values. How calibration will change them etc. 
+
+3. Writing a Landing protocol just based on Altitude and Stabilize modes from RAW Data and RC_Override
+
+4. Writing a Roll Pitch controller to move to a position using mocap data.
+
+

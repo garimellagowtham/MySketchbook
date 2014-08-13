@@ -1,0 +1,421 @@
+/** avr_rustler
+*  Author: Subhransu Mishra
+*  email: subhransu.kumar.mishra@gmail.com
+*  Description:This program controls a rustler car by receiving
+*              instruction sent from a computer over Serial2 in the
+*              in the format specified in uav.h file.
+*/
+
+//firmware
+//#include <PWM.h> //http://forum.arduino.cc/index.php?topic=117425.0
+#include "uav.h"
+#include <Servo.h>
+#include <SPI.h>
+#include "Timer.h"
+#include <util.h>
+#include <ros.h>
+#include <geometry_msgs/Point.h>
+#include <std_msgs/String.h>
+//#include "String"
+//********************TODO*******************************/
+//make your own servo library or some basic set of commands so that one doesn't have to stick to 50Hz pwm pulse
+  //The escs don't need a 50Hz(20ms) pulse, they just do their work based on on time. 
+  //This allows us to have faster update rate
+//Make the Serial2 data receive non-blocking
+  //Nows it waits for the next byte to receive
+//Implement the functions
+    //raw2finalFullRange- This is what is being used currently
+    //raw2finalDirect-  
+
+//The layout of the arduino mega pinouts are scrambled in apm2.5
+//The followign sequence refers to the apm 2.5 out1 out2........out 11
+int OUT[]={12,11,8,7,6,3,2,5,13,45,44};
+int pin_batt_volt_pc=A0;
+int pin_batt_volt_main=A13;
+int pin_buzzer=OUT[2];//out 3 connected to buzzer
+const float conToDeg = 0.08789;
+
+//Encoder enable pin
+#define CS A2
+#define CS2 53
+#define CS3 40
+//set a timer
+Timer t_timer;
+
+/* Creating Ros node Handle and the publisher for encoder data */
+ros::NodeHandle  nh;
+
+geometry_msgs::Point enc_msg;
+//std_msgs::String enc_msg;
+ros::Publisher enc_pub("encoder", &enc_msg);
+char hello[13] = "hello world!";
+
+
+float volt_pc=0.0f, volt_main=0.0f;
+//static const int BUF_LEN = 40;
+  //char buf[BUF_LEN];
+uint16_t servo_min[]={1000,1000};
+uint16_t servo_max[]={2000,2000};
+Servo servo_car[2];//0:steering, 1:Drive  
+
+//The 16 bit number exactly as sent by the computer.
+uint16_t servo_pwm_raw[2]={1500,1500};
+
+//Processed data.
+uint16_t servo_pwm[2] = {1500,1500};
+
+//variable for Encoder
+float ABSposition;
+float ABSposition_last;
+float ABSpeed;
+uint8_t encoder[1];
+
+float time_last;
+float deg = 0.00;
+//float MotorSpeed = 0.00;
+//float lasttime = 0.00;
+
+inline float htonf(float value) {
+union v {
+float	f;
+uint32_t i;
+};
+union v val;
+val.f = value;
+val.i = htonl(val.i);
+return val.f;
+}
+
+inline float ntohf(float value) {
+union v {
+float	f;
+uint32_t i;
+};
+union v val;
+val.f = value;
+val.i = ntohl(val.i);
+return val.f;
+}
+
+void update_pwm(void) {
+  for(int i=0; i<2; i++) {
+    //servo_pwm[i] = (uint16_t)(servo_min[i] + (float)(servo_max[i]-servo_min[i])*((float)servo_pwm_raw[i]/65335.0) );
+    servo_pwm[i]=servo_pwm_raw[i];
+    //raw2finalFullRange
+    //raw2finalDirect
+    
+    if(servo_pwm[i] < servo_min[i])
+      servo_pwm[i]=servo_min[i];
+      
+    if(servo_pwm[i] > servo_max[i])
+      servo_pwm[i]=servo_max[i];
+     
+    servo_car[i].writeMicroseconds(servo_pwm[i]);
+    
+    
+    //Serial2.print("\tPwm");Serial2.print(i);Serial2.print(":");  Serial2.print(servo_pwm[i]);
+  }
+  //Serial2.println(""); 
+}
+/*
+void send_statusmsg(String data)
+{
+  //uint8_t len = 2;
+  ///while(data[len] != '\0')
+   // len++;
+  Serial2.write((char)(UAV_DEBUG_MSG));
+      char buf[BUF_LEN];
+  // strcpy(buf,data);
+  delayMicroseconds(100000);
+  Serial2.write((char)(data.length()));
+  data.toCharArray(buf,BUF_LEN);
+  //Serial2.write((char)(BUF_LEN));
+  //Serial2.write((char)(len+1));
+  Serial2.write((uint8_t*)buf,data.length());
+}
+*/
+uint8_t SPI_T (uint8_t msg)    //Repetitive SPI transmit sequence
+{
+   uint8_t msg_temp = 0;           //vairable to hold recieved message
+   digitalWrite(CS,LOW);    //select spi device enable slave
+   delayMicroseconds(5);
+   msg_temp = SPI.transfer(msg);   //send command and recieve message
+   delayMicroseconds(5);
+   digitalWrite(CS,HIGH);          //deselect spi device
+   return msg_temp;     //return recieved 8-bit message
+}
+
+/*
+void mySerial2Event() {
+  
+}
+*/
+void myEncoderEvent()
+{
+  /*
+   uint8_t recieved;           //vairable to hold recieved position
+   ABSposition = 0;            //reset position vairable
+   
+   SPI.begin();                //start transmition
+   digitalWrite(CS,LOW);
+   
+  
+   SPI_T(0x10);                    //issue read position command
+   delayMicroseconds(5);  //delay a minimum of 5 microseconds
+   
+   recieved = SPI_T(0x00);     //issue NOP message to check if encoder is ready to send
+   //Serial.print("First received:");
+   //Serial.println(recieved, HEX);
+   //Serial.println("Waiting for Next data command");  
+   while (recieved != 0x10)    //loop while encoder sends back echo of command
+   {
+     recieved = SPI_T(0x00);   //cleck again if encoder is still working 
+    // Serial.print(" received:");
+     //Serial.println(recieved, HEX);
+     delayMicroseconds(5);     //wait 5 microseconds
+   }
+   //Serial.println("received Next data command");
+   encoder[0] = SPI_T(0x00);    //Recieve MSB
+   delayMicroseconds(5);     //delay 5 microseconds before reading in LSB
+   encoder[1] = SPI_T(0x00);    // recieve LSB
+ 
+   SPI.end();                //end transmition
+   
+   encoder[0] &=~ 0xF0;        //mask out the first 4 bits
+   float time_now = millis();   
+   ABSposition = encoder[0] << 8;    //shift MSB to correct ABSposition in ABSposition message
+   ABSposition += encoder[1];        // add LSB to ABSposition message to complete message
+    */
+   /*if (ABSposition != ABSposition_last)    //if nothing has changed dont wast time sending position
+   {
+     
+    
+     deg = ABSposition;
+     deg = deg * 0.08789;
+     Serial.print("---------------------------degree: ");    // aprox 360/4096
+     Serial.println(deg);     //send position in degrees
+   }*/
+   //float time2 = micros();
+   //Serial.print("----------------------time duration single loop");
+  // float duration  = micros() - lasttime;
+   //lasttime = micros();
+   //MotorSpeed = (ABSposition - ABSposition_last)*0.0879/(duration/1e9);
+  //Serial.println( ABSposition*conToDeg);
+  /*
+  ABSposition = ABSposition*conToDeg;
+  //Serial.print("position difference raw");Serial.println(ABSposition_last - ABSposition);
+ 
+  //Serial.print("2 position difference raw");Serial.println( ABSposition -ABSposition_last);
+  if(ABSposition > 90 + ABSposition_last){ABSposition_last=360+ABSposition_last;}
+  if(ABSposition_last > ABSposition)
+    ABSpeed = double (1000.0*(ABSposition_last - ABSposition))/((double)(time_now - time_last));
+  else
+     ABSpeed = double (1000.0*(-ABSposition_last + ABSposition))/((double)(time_now - time_last));
+  */
+  /*Serial.print("postion in degree");Serial.println(ABSposition);
+  Serial.print("last postion in degree");Serial.println(ABSposition_last);
+  Serial.print("position difference");Serial.println(ABSposition_last - ABSposition);
+  Serial.print("speed");Serial.println( ABSpeed);
+  Serial.print("time");
+  Serial.println(time_now - time_last);*/
+ 
+/*
+  time_last = time_now; 
+ */
+  /*ABSposition_last = ABSposition;    //set last position to current position
+  Serial2.write((char)(UAV_DEV_ENC));
+  
+   //float angdeg[2] ={ htonf(ABSposition*conToDeg),htonf((float)millis())};
+   //float angdeg[2] ={ htonf(ABSpeed*conToDeg),htonf((float)millis())};
+   float angdeg[2] ={ htonf(ABSpeed),htonf((float)time_now)};
+   //Serial.println(angdeg);
+   Serial2.write((uint8_t*)&angdeg,8);
+   Serial2.flush();
+   */
+   enc_msg.x = 1.0;
+   enc_msg.y = 2.0;
+   enc_msg.z = 3.0;
+   enc_pub.publish(&enc_msg);
+   nh.spinOnce();
+   //delay(10);    //wait a bit till next check
+}
+void Heartbeat()
+{
+  //char buf[BUF_LEN]={'\0'};
+  volt_pc = 0.013443*(float)analogRead(pin_batt_volt_pc);//0.013443=0.0049/0.3645
+  volt_main = 0.049742*(float)analogRead(pin_batt_volt_main);
+   //if(volt_pc<6.2)
+    //tone(pin_buzzer,1000,1000);
+ /* if (volt_main<9.3)
+    tone(pin_buzzer,5000,1000);
+  else
+    noTone(pin_buzzer);
+    */
+  
+//  sprintf(buf,"volt_pc:%f\n volt_main:%f\n",volt_pc, volt_main);
+  //send_statusmsg(buf);
+  //Serial.println(volt_pc);
+    
+  //sprintf(buf,"volt_main:%f\n",volt_pc);
+  //send_statusmsg(buf);
+  Serial2.write((char)(UAV_HEARTBEAT));
+  float volt_buf[2] = {htonf(volt_main),htonf(volt_pc)};
+  Serial2.write((uint8_t*)volt_buf,2*sizeof(float));
+  //Serial2.write(buf,
+  //Serial.println(volt_main);
+}
+void setup() {
+  //Serial is used to talk to the computer to debug 
+  //This speed can be increased to 115200 
+ // Serial.begin(57600);
+  
+  //It's through Serial that the atmega receives the instruction to move the satellite
+  //57600 is the max speed at Serial2which the 3d robotics radio can operate
+  //Serial2.begin(57600);
+  //Serial.begin(57600);
+  
+  //Initialize Ros and publishers:
+  nh.initNode();
+  nh.advertise(enc_pub);
+  /*
+  for(uint8_t i=0;i<2;i++)
+    servo_car[i].attach(OUT[i]);
+    
+  pinMode(pin_buzzer,OUTPUT);
+  
+  pinMode(pin_batt_volt_pc, INPUT);
+  pinMode(pin_batt_volt_main, INPUT);
+  
+  //disable the pullup regs so that the adc reading are not affected
+  digitalWrite(pin_batt_volt_pc,LOW);
+  digitalWrite(pin_batt_volt_main,LOW);
+    
+  //The startup value for the servo
+  for(uint8_t i=0;i<2;i++)
+    servo_car[i].writeMicroseconds(servo_pwm[i]);
+    
+  //setup  for encoder
+ // Serial.println("Encoder Setup start");
+  ABSposition = 0;                       //initilaize variables
+  ABSposition_last = 0;
+  pinMode(CS,OUTPUT);    //Slave Select
+  pinMode(CS2,OUTPUT);
+  pinMode(CS3,OUTPUT);
+  digitalWrite(CS,HIGH);    
+  digitalWrite(CS2,HIGH); 
+  digitalWrite(CS3,HIGH); 
+  SPI.begin();                           //Initialize SPI bus
+  SPI.setBitOrder(MSBFIRST);             //Bits come in from encoder as MSB first
+  SPI.setDataMode(SPI_MODE0);            //SPI mode 0: CPOL and CPHA are both 0
+  SPI.setClockDivider(SPI_CLOCK_DIV16);  //Clock speed for SPI 
+
+  delay(2000);                           //Delay 2 seconds
+  SPI.end();                             //Disable SPI bus
+  //Serial.println("Encoder Setup end");
+  //Setting timediff of packages:
+  
+  //uint32_t timer_ms_start=0, timer_ms_now = 0;
+  //timer_ms_start=millis();
+    //  Serial.print("Waiting: ");
+    */
+      /*
+  while(1)
+  {
+    if(Serial2.available())
+    {
+      uint8_t sign = Serial2.read();
+      if(sign == UAV_PKG_CONFIG)
+      {
+        Serial.println("Received data");
+        Serial2.readBytes((char*)timediff,3*sizeof(uint16_t));        
+        timediff[0] = ntohs(timediff[0]);
+        timediff[1] = ntohs(timediff[1]);
+        timediff[2] = ntohs(timediff[2]);
+        Serial.println(timediff[0]);
+        Serial.println(timediff[1]);
+        t_timer.every(timediff[0],myEncoderEvent);
+        t_timer.every(timediff[1],Heartbeat);  
+          Serial2.write(&sign,1);
+          //Serial2.flush();
+        Serial.print(sign,HEX);
+        //Serial2.write((uint8_t*)&sign,sizeof(uint8_t));
+        break;
+      }
+    }
+    */
+  /*  timer_ms_now=millis();
+    Serial.print(".");
+    if((timer_ms_now - timer_ms_start) > 5*1e3) //5 seconds waiting time
+    {
+        Serial.println("Timeout");
+        t_timer.every(100,myEncoderEvent);
+        t_timer.every(2*1000,Heartbeat);      
+        break;
+    }
+    */
+    //delay(100);
+  //}
+  
+ /*
+  t_timer.every(10,myEncoderEvent);
+  t_timer.every(2*1000,Heartbeat);  
+  */
+  /*
+  /////////////////////////////////////////////////////////////////////////////////////////////////////////////
+  //////read fist encoder postion
+   uint8_t recieved;           //vairable to hold recieved position
+   ABSposition_last = 0;            //reset position vairable
+   
+   SPI.begin();                //start transmition
+   digitalWrite(CS,LOW);
+   
+  
+   SPI_T(0x10);                    //issue read position command
+   delayMicroseconds(5);  //delay a minimum of 5 microseconds
+   
+   recieved = SPI_T(0x00);     //issue NOP message to check if encoder is ready to send
+   //Serial.print("First received:");
+   //Serial.println(recieved, HEX);
+   //Serial.println("Waiting for Next data command");  
+   while (recieved != 0x10)    //loop while encoder sends back echo of command
+   {
+     recieved = SPI_T(0x00);   //cleck again if encoder is still working 
+    // Serial.print(" received:");
+     //Serial.println(recieved, HEX);
+     delayMicroseconds(5);     //wait 5 microseconds
+   }
+   //Serial.println("received Next data command");
+   encoder[0] = SPI_T(0x00);    //Recieve MSB
+   delayMicroseconds(5);     //delay 5 microseconds before reading in LSB
+   encoder[1] = SPI_T(0x00);    // recieve LSB
+ 
+   SPI.end();                //end transmition
+   
+   encoder[0] &=~ 0xF0;        //mask out the first 4 bits
+    
+   ABSposition_last = encoder[0] << 8;    //shift MSB to correct ABSposition in ABSposition message
+   ABSposition_last += encoder[1];        // add LSB to ABSposition message to complete message
+   ///////////////////////////////////////////////////////////////////////////////////////////////////////
+   */
+  t_timer.every(200,myEncoderEvent);
+  //t_timer.every(2*1000,Heartbeat); 
+  delay(100);
+  time_last = millis();
+}
+
+void loop() 
+{
+      //   Serial2.println("Read");
+         // send_statusmsg("avr is on   ");
+       //   delay(500); 
+       /*
+while(Serial2.available())
+{
+  mySerial2Event(); 
+}
+*/
+  
+//delay(10);
+t_timer.update();
+delay(1);
+}
